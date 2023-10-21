@@ -12,3 +12,16 @@
 等你清楚地了解了单个组件的源码结构，就可以试着切换成自上而下的方法，即从一个大的功能点入手，再逐步深入到各个底层组件的源码。得益于前面的积累，你会对下沉过程中碰到的各层基础代码非常熟悉，这会带给你很大的成就感。
 
 ![kafka源码全景图](https://ericcoder-oss.oss-cn-hangzhou.aliyuncs.com/markdown_images/image-20231021142137597.png)
+
+从功能上讲，Kafka源码分为四大模块。
+
+- 服务器端源码：实现Kafka架构和各类优秀特性的基础。
+- Java客户端源码：定义了与Broker端的交互机制，以及通用的Broker端组件支撑代码。
+- Connect源码：用于实现Kafka与外部系统的高性能数据传输。
+- Streams源码：用于实现实时的流处理功能。
+
+可以看到，服务器端源码是理解Kafka底层架构特别是系统运行原理的基础，其他三个模块的源码都对它有着强烈的依赖。因此，**Kafka最最精华的代码，当属服务器端代码无疑！**
+
+![image-20231021142354231](https://ericcoder-oss.oss-cn-hangzhou.aliyuncs.com/markdown_images/image-20231021142354231.png)
+
+## Directory
