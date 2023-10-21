@@ -1,5 +1,9 @@
 # Explore-kafka
 
+> 图片可能由于网络问题无法访问，可以下载到本地阅读
+>
+> 本项目基于kafka 3.6.0，源码版本为2023.10的源码版本 ------'KAFKA-15378'（可以在git history中回溯），所以一部分的分析具有一定的版本局限性。
+
 ## About Project
 
 本项目是采用**自下而上**、**自上而下**相结合的方式阅读kafka源码的项目笔记。
@@ -11,7 +15,7 @@
 
 等你清楚地了解了单个组件的源码结构，就可以试着切换成自上而下的方法，即从一个大的功能点入手，再逐步深入到各个底层组件的源码。得益于前面的积累，你会对下沉过程中碰到的各层基础代码非常熟悉，这会带给你很大的成就感。
 
-![kafka源码全景图](https://ericcoder-oss.oss-cn-hangzhou.aliyuncs.com/markdown_images/image-20231021142137597.png)
+![kafka源码全景图](/Users/gengruilin/Desktop/Projects/explore-kafka/images/README/image-20231021142137597.png)
 
 从功能上讲，Kafka源码分为四大模块。
 
@@ -22,8 +26,9 @@
 
 可以看到，服务器端源码是理解Kafka底层架构特别是系统运行原理的基础，其他三个模块的源码都对它有着强烈的依赖。因此，**Kafka最最精华的代码，当属服务器端代码无疑！**
 
-![image-20231021142354231](https://ericcoder-oss.oss-cn-hangzhou.aliyuncs.com/markdown_images/image-20231021142354231.png)
+![image-20231021142354231](/Users/gengruilin/Desktop/Projects/explore-kafka/images/README/image-20231021142354231.png)
 
 ## Directory
 
 [quickstart](https://github.com/EricCoderG/explore-kafka/blob/master/quickstart.md)
+
