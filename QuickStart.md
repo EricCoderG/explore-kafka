@@ -1,6 +1,6 @@
-# QuiskStart
+# quiskstart
 
-## Scala
+## scala
 
 能够用到Kafka，说明Java基础还是很好的，上手scala需要关注下面几点
 
