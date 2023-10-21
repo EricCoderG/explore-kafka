@@ -4,7 +4,7 @@
 
 Kafka日志在磁盘上的组织架构如下图所示：
 
-![image-20231021163311422-20231021211842754](/Users/gengruilin/Desktop/Projects/explore-kafka/images/log/image-20231021163311422-20231021211842754.png)
+![image-20231021163311422-20231021211842754](./images/log/image-20231021163311422-20231021211842754.png)
 
 日志是Kafka服务器端代码的重要组件之一，很多其他的核心组件都是以日志为基础的。
 
@@ -26,8 +26,8 @@ Kafka日志对象由多个日志段对象组成，而每个日志段对象会在
 
 `org/apache/kafka/storage/internals/log/LogSegment.java`
 
-![截屏2023-10-21 18.06.49](/Users/gengruilin/Desktop/Projects/explore-kafka/images/log/%E6%88%AA%E5%B1%8F2023-10-21%2018.06.49.png)
+![截屏2023-10-21 18.06.49](./images/log/%E6%88%AA%E5%B1%8F2023-10-21%2018.06.49.png)
 
 ### 日志段类声明
 
-![image-20231021205109799](/Users/gengruilin/Desktop/Projects/explore-kafka/images/log/image-20231021205109799.png)
+![image-20231021205109799](./images/log/image-20231021205109799.png)
