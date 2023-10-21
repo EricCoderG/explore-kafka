@@ -28,5 +28,6 @@
 
 ## Directory
 
-[quickstart](https://github.com/EricCoderG/explore-kafka/blob/master/quickstart.md)
+[0.quickstart](https://github.com/EricCoderG/explore-kafka/blob/master/quickstart.md)
 
+[1.log](https://github.com/EricCoderG/explore-kafka/blob/master/log.md)
