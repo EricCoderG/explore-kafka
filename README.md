@@ -25,3 +25,5 @@
 ![image-20231021142354231](https://ericcoder-oss.oss-cn-hangzhou.aliyuncs.com/markdown_images/image-20231021142354231.png)
 
 ## Directory
+
+[quickstart](https://github.com/EricCoderG/explore-kafka/blob/master/quickstart.md)
