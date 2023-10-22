@@ -320,6 +320,173 @@ recover 开始时，代码依次调用索引对象的 reset 方法清空所有�
 
 # 2.日志究竟是如何加载日志段的？
 
+## UnifiedLog代码解析
 
+### 代码位置
+
+`kafka/log/UnifiedLog.scala`
+
+### UnifiedLog Object
+
+> val ProducerSnapshotFileSuffix = ".snapshot"
+>
+> val DeletedFileSuffix = ".deleted"
+>
+> val CleanShutdownFile = ".kafka_cleanshutdown"
+>
+> 这三处是之前版本的，目前版本中已经删去，应该会以其他形式存在
+
+```scala
+object Log {
+  val LogFileSuffix = ".log"
+  val IndexFileSuffix = ".index"
+  val TimeIndexFileSuffix = ".timeindex"
+  val TxnIndexFileSuffix = ".txnindex"
+  val CleanedFileSuffix = ".cleaned"
+  val SwapFileSuffix = ".swap"
+  val DeleteDirSuffix = "-delete"
+  val FutureDirSuffix = "-future"
+......
+}
+```
+
+这是Log Object定义的所有常量。如果有面试官问你Kafka中定义了多少种文件类型，你可以自豪地把这些说出来。耳熟能详的.log、.index、.timeindex和.txnindex我就不解释了，我们来了解下其他几种文件类型。
+
+- .snapshot是Kafka为幂等型或事务型Producer所做的快照文件。鉴于我们现在还处于阅读源码的初级阶段，事务或幂等部分的源码我就不详细展开讲了。
+- .deleted是删除日志段操作创建的文件。目前删除日志段文件是异步操作，Broker端把日志段文件从.log后缀修改为.deleted后缀。如果你看到一大堆.deleted后缀的文件名，别慌，这是Kafka在执行日志段文件删除。
+- .cleaned和.swap都是Compaction操作的产物，等我们讲到Cleaner的时候再说。
+- -delete则是应用于文件夹的。当你删除一个主题的时候，主题的分区文件夹会被加上这个后缀。
+- -future是用于变更主题分区文件夹地址的，属于比较高阶的用法。
+
+总之，记住这些常量吧。记住它们的主要作用是，以后不要被面试官唬住！开玩笑，其实这些常量最重要的地方就在于，它们能够让你了解Kafka定义的各种文件类型。
+
+### UnifiedLog Class
+
+最关键的属性只有两处
+
+- logStartOffset：表示**日志的当前最早位移**
+- localLog：包含从磁盘恢复的非空日志段的 LocalLog 实例
+
+```scala
+/**
+* @param logStartOffset The earliest offset allowed to be exposed to kafka client.
+ *                       The logStartOffset can be updated by :
+ *                       - user's DeleteRecordsRequest
+ *                       - broker's log retention
+ *                       - broker's log truncation
+ *                       - broker's log recovery
+ *                       The logStartOffset is used to decide the following:
+ *                       - Log deletion. LogSegment whose nextOffset <= log's logStartOffset can be deleted.
+ *                         It may trigger log rolling if the active segment is deleted.
+ *                       - Earliest offset of the log in response to ListOffsetRequest. To avoid OffsetOutOfRange exception after user seeks to earliest offset,
+ *                         we make sure that logStartOffset <= log's highWatermark
+ *                       Other activities such as log cleaning are not affected by logStartOffset.
+ * @param localLog The LocalLog instance containing non-empty log segments recovered from disk
+
+*/
+@threadsafe
+class UnifiedLog(@volatile var logStartOffset: Long,
+                 private val localLog: LocalLog,
+                 val brokerTopicStats: BrokerTopicStats,
+                 val producerIdExpirationCheckIntervalMs: Int,
+                 @volatile var leaderEpochCache: Option[LeaderEpochFileCache],
+                 val producerStateManager: ProducerStateManager,
+                 @volatile private var _topicId: Option[Uuid],
+                 val keepPartitionMetadataFile: Boolean,
+                 val remoteStorageSystemEnable: Boolean = false,
+                 @volatile private var logOffsetsListener: LogOffsetsListener = LogOffsetsListener.NO_OP_OFFSETS_LISTENER) extends Logging with AutoCloseable {
+......
+}
+```
+
+你可能听过日志的当前末端位移，也就是Log End Offset（LEO），它是表示日志下一条待插入消息的位移值，而这个Log Start Offset是跟它相反的，它表示日志当前对外可见的最早一条消息的位移值。我用一张图来标识它们的区别：
+
+![image-20231022115831741](images/log/image-20231022115831741.png)
+
+图中绿色的位移值3是日志的Log Start Offset，而位移值15表示LEO。另外，位移值8是高水位值，它是区分已提交消息和未提交消息的分水岭。
+
+## LogLoader代码解析
+
+### 代码位置
+
+`kafka/log/LogLoader.scala`
+
+load函数
+
+```scala
+  /**
+   * Load the log segments from the log files on disk, and returns the components of the loaded log.
+   * Additionally, it also suitably updates the provided LeaderEpochFileCache and ProducerStateManager
+   * to reflect the contents of the loaded log.
+   *
+   * In the context of the calling thread, this function does not need to convert IOException to
+   * KafkaStorageException because it is only called before all logs are loaded.
+   *
+   * @return the offsets of the Log successfully loaded from disk
+   *
+   * @throws LogSegmentOffsetOverflowException if we encounter a .swap file with messages that
+   *                                           overflow index offset
+   */
+
+```
+
+- 这个函数负责从磁盘上的日志文件加载日志段，并返回加载日志的组件。此外，它还更新了提供的`LeaderEpochFileCache`和`ProducerStateManager`以反映加载日志的内容。
+- **首次遍历**：扫描日志目录中的文件，删除所有临时文件，并找到任何被中断的交换操作。
+- **第二次遍历**：删除在`minSwapFileOffset`和`maxSwapFileOffset`之间的段。这些段之前可能已经被压缩或分割，但在关闭代理之前尚未重命名为`.delete`。
+- **第三次遍历**：重命名所有交换文件。
+- **第四次遍历**：加载所有的日志和索引文件。
+- 函数接着会对日志进行恢复，检查是否有最早的领导者时代没有在硬故障中被冲洗。然后重建与已加载的日志关联的生产者状态。
+- 函数返回一个名为`LoadedLogOffsets`的对象，该对象包含成功从磁盘加载的日志的偏移量。
 
 # 3.彻底搞懂Log对象的常见操作
+
+一般习惯把Log的常见操作分为4大部分。
+
+1. **高水位管理操作**：高水位的概念在Kafka中举足轻重，对它的管理，是Log最重要的功能之一。
+2. **日志段管理**：Log是日志段的容器。高效组织与管理其下辖的所有日志段对象，是源码要解决的核心问题。
+3. **关键位移值管理**：日志定义了很多重要的位移值，比如Log Start Offset和LEO等。确保这些位移值的正确性，是构建消息引擎一致性的基础。
+4. **读写操作**：所谓的操作日志，大体上就是指读写日志。读写操作的作用之大，不言而喻。
+
+接下来，会按照这个顺序和你介绍Log对象的常见操作，并希望特别关注下高水位管理部分。
+
+事实上，社区关于日志代码的很多改进都是基于高水位机制的，有的甚至是为了替代高水位机制而做的更新。比如，Kafka的KIP-101提案正式引入的Leader Epoch机制，就是用来替代日志截断操作中的高水位的。显然，要深入学习Leader Epoch，你至少要先了解高水位并清楚它的弊病在哪儿才行。
+
+## 高水位管理操作
+
+在介绍高水位管理操作之前，我们先来了解一下高水位的定义。
+
+### 定义
+
+源码中日志对象定义高水位的语句只有一行：
+
+`kafka/log/UnifiedLog.scala`
+
+```scala
+@volatile private var highWatermarkMetadata: LogOffsetMetadata = LogOffsetMetadata(logStartOffset)
+```
+
+这行语句传达了两个重要的事实：
+
+1. 高水位值是volatile（易变型）的。因为多个线程可能同时读取它，因此需要设置成volatile，保证内存可见性。另外，由于高水位值可能被多个线程同时修改，因此源码使用Java Monitor锁来确保并发修改的线程安全。
+2. 高水位值的初始值是Log Start Offset值。在第一节我们提到，每个Log对象都会维护一个Log Start Offset值。当首次构建高水位时，它会被赋值成Log Start Offset值。
+
+你可能会关心LogOffsetMetadata是什么对象。因为它比较重要，我们一起来看下这个类的定义：
+
+```java
+    public LogOffsetMetadata(long messageOffset,
+                             long segmentBaseOffset,
+                             int relativePositionInSegment) {
+        this.messageOffset = messageOffset;
+        this.segmentBaseOffset = segmentBaseOffset;
+        this.relativePositionInSegment = relativePositionInSegment;
+    }
+
+```
+
+显然，它就是一个POJO类，里面保存了三个重要的变量。
+
+1. messageOffset：**消息位移值**，这是最重要的信息。我们总说高水位值，其实指的就是这个变量的值。
+2. segmentBaseOffset：**保存该位移值所在日志段的起始位移**。日志段起始位移值辅助计算两条消息在物理磁盘文件中位置的差值，即两条消息彼此隔了多少字节。这个计算有个前提条件，即两条消息必须处在同一个日志段对象上，不能跨日志段对象。否则它们就位于不同的物理文件上，计算这个值就没有意义了。**这里的segmentBaseOffset，就是用来判断两条消息是否处于同一个日志段的**。
+3. relativePositionSegment：**保存该位移值所在日志段的物理磁盘位置**。这个字段在计算两个位移值之间的物理磁盘位置差值时非常有用。你可以想一想，Kafka什么时候需要计算位置之间的字节数呢？答案就是在读取日志的时候。假设每次读取时只能读1MB的数据，那么，源码肯定需要关心两个位移之间所有消息的总字节数是否超过了1MB。
+
+LogOffsetMetadata类的所有方法，都是围绕这3个变量展开的工具辅助类方法，非常容易理解。
