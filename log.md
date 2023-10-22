@@ -470,6 +470,10 @@ load函数
 1. 高水位值是volatile（易变型）的。因为多个线程可能同时读取它，因此需要设置成volatile，保证内存可见性。另外，由于高水位值可能被多个线程同时修改，因此源码使用Java Monitor锁来确保并发修改的线程安全。
 2. 高水位值的初始值是Log Start Offset值。在第一节我们提到，每个Log对象都会维护一个Log Start Offset值。当首次构建高水位时，它会被赋值成Log Start Offset值。
 
+### LogOffsetMetadata
+
+`kafka/log/UnifiedLog.scala`
+
 你可能会关心LogOffsetMetadata是什么对象。因为它比较重要，我们一起来看下这个类的定义：
 
 ```java
@@ -490,3 +494,91 @@ load函数
 3. relativePositionSegment：**保存该位移值所在日志段的物理磁盘位置**。这个字段在计算两个位移值之间的物理磁盘位置差值时非常有用。你可以想一想，Kafka什么时候需要计算位置之间的字节数呢？答案就是在读取日志的时候。假设每次读取时只能读1MB的数据，那么，源码肯定需要关心两个位移之间所有消息的总字节数是否超过了1MB。
 
 LogOffsetMetadata类的所有方法，都是围绕这3个变量展开的工具辅助类方法，非常容易理解。
+
+## 日志段管理
+
+`org/apache/kafka/storage/internals/log/LogSegments.java`
+
+### 存储
+
+日志是日志段的容器，那它究竟是如何承担起容器一职的呢？
+
+```Java
+private final ConcurrentNavigableMap<Long, LogSegment> segments = new ConcurrentSkipListMap<>();
+```
+
+可以看到，源码使用Java的`ConcurrentSkipListMap`类来保存所有日志段对象。ConcurrentSkipListMap有2个明显的优势。
+
+- **它是线程安全的**，这样Kafka源码不需要自行确保日志段操作过程中的线程安全；
+- **它是键值（Key）可排序的Map**。Kafka将每个日志段的起始位移值作为Key，这样一来，我们就能够很方便地根据所有日志段的起始位移值对它们进行排序和比较，同时还能快速地找到与给定位移值相近的前后两个日志段。
+
+所谓的日志段管理，无非是增删改查。接下来，我们就从这4个方面一一来看下。
+
+### 增删改查
+
+`kafka/log/UnifiedLog.scala`
+
+#### 增加
+
+```scala
+  @threadsafe
+  private[log] def addSegment(segment: LogSegment): LogSegment = localLog.segments.add(segment)
+```
+
+#### 删除
+
+#### 删除
+
+删除操作相对来说复杂一点。我们知道Kafka有很多留存策略，包括基于时间维度的、基于空间维度的和基于Log Start Offset维度的。那啥是留存策略呢？其实，它本质上就是**根据一定的规则决定哪些日志段可以删除**。
+
+从源码角度来看，Log中控制删除操作的总入口是**deleteOldSegments无参方法**：
+
+```scala
+def deleteOldSegments(): Int = {
+    if (config.delete) {
+      deleteRetentionMsBreachedSegments() + deleteRetentionSizeBreachedSegments() + deleteLogStartOffsetBreachedSegments()
+    } else {
+      deleteLogStartOffsetBreachedSegments()
+    }
+  }
+```
+
+代码中的deleteRetentionMsBreachedSegments、deleteRetentionSizeBreachedSegments和deleteLogStartOffsetBreachedSegments分别对应于上面的那3个策略。
+
+下面这张图展示了Kafka当前的三种日志留存策略，以及底层涉及到日志段删除的所有方法：
+
+![截屏2023-10-22 18.10.16](images/log/%E6%88%AA%E5%B1%8F2023-10-22%2018.10.16.png)
+
+从图中我们可以知道，上面3个留存策略方法底层都会调用带参数版本的deleteOldSegments方法，而这个方法又相继调用了deletableSegments和deleteSegments方法。
+
+#### 修改
+
+说完了日志段删除，接下来我们来看如何修改日志段对象。
+
+其实，源码里面不涉及修改日志段对象，所谓的修改或更新也就是替换而已，用新的日志段对象替换老的日志段对象。举个简单的例子。segments.put(1L, newSegment)语句在没有Key=1时是添加日志段，否则就是替换已有日志段。
+
+#### 查询
+
+最后再说下查询日志段对象。源码中需要查询日志段对象的地方太多了，但主要都是利用了ConcurrentSkipListMap的现成方法。
+
+- segments.firstEntry：获取第一个日志段对象；
+- segments.lastEntry：获取最后一个日志段对象，即Active Segment；
+- segments.higherEntry：获取第一个起始位移值≥给定Key值的日志段对象；
+- segments.floorEntry：获取最后一个起始位移值≤给定Key值的日志段对象。
+
+## 关键位移值管理
+
+Log对象维护了一些关键位移值数据，比如Log Start Offset、LEO等。其实，高水位值也算是关键位移值，**只不过它太重要了**，所以，单独把它拎出来作为独立的一部分来讲。
+
+![截屏2023-10-22 18.47.46](images/log/%E6%88%AA%E5%B1%8F2023-10-22%2018.47.46.png)
+
+请注意这张图中位移值15的虚线方框。这揭示了一个重要的事实：**Log对象中的LEO永远指向下一条待插入消息**，**也就是说，LEO值上面是没有消息的！**源码中定义LEO的语句很简单：
+
+`kafka/log/LocalLog.scala`
+
+```scala
+@volatile private var nextOffsetMetadata: LogOffsetMetadata = LogOffsetMetadata
+```
+
+这里的nextOffsetMetadata就是我们所说的LEO，它也是LogOffsetMetadata类型的对象。Log对象初始化的时候，源码会加载所有日志段对象，并由此计算出当前Log的下一条消息位移值。之后，Log对象将此位移值赋值给LEO。
+
